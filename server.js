@@ -48,6 +48,11 @@ async function setupDatabase() {
     ALTER TABLE users ADD COLUMN IF NOT EXISTS username VARCHAR(100) UNIQUE;
   `);
 
+  // ── Migration: allow workers without email ──
+  await pool.query(`
+    ALTER TABLE users ALTER COLUMN email DROP NOT NULL;
+  `);
+
   await pool.query(`
     CREATE TABLE IF NOT EXISTS surveys (
       id          SERIAL PRIMARY KEY,
