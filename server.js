@@ -212,11 +212,16 @@ app.get('/api/surveys', auth, async (req, res) => {
       result = await pool.query(
         `SELECT s.*, u.name as creator_name,
            COUNT(DISTINCT r.id) as responses,
-           COUNT(DISTINCT sa.worker_id) as workers
+           COUNT(DISTINCT sa.worker_id) as workers,
+           COALESCE(
+             json_agg(DISTINCT jsonb_build_object('id', wu.id, 'name', wu.name, 'username', wu.username))
+             FILTER (WHERE wu.id IS NOT NULL), '[]'
+           ) as assigned_workers
          FROM surveys s
          LEFT JOIN users u ON u.id = s.created_by
          LEFT JOIN responses r ON r.survey_id = s.id
          LEFT JOIN survey_assignments sa ON sa.survey_id = s.id
+         LEFT JOIN users wu ON wu.id = sa.worker_id
          WHERE s.created_by = $1
          GROUP BY s.id, u.name
          ORDER BY s.created_at DESC`,
