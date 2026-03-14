@@ -15,7 +15,8 @@ const pool = process.env.DATABASE_URL
 
 // ─── MIDDLEWARE ───────────────────────────────────────────────
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ limit: '10mb', extended: true }));
 
 const auth = (req, res, next) => {
   const token = req.headers.authorization?.split(' ')[1];
@@ -332,6 +333,13 @@ app.post('/api/surveys/:id/respond', auth, async (req, res) => {
        VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
       [req.params.id, req.user.id, JSON.stringify(answers || {}), latitude, longitude, photo_url]
     );
+
+    // Mark survey as complete once a response is submitted
+    await pool.query(
+      `UPDATE surveys SET status = 'complete' WHERE id = $1`,
+      [req.params.id]
+    );
+
     res.json(result.rows[0]);
   } catch (e) {
     res.status(500).json({ error: e.message });
