@@ -89,6 +89,9 @@ async function setupDatabase() {
     );
   `);
 
+  // ── Migration: activate all draft surveys ──
+  await pool.query(`UPDATE surveys SET status = 'active' WHERE status = 'draft';`);
+
   // Default organiser account
   const existing = await pool.query(`SELECT id FROM users WHERE email = 'admin@fieldmapper.com'`);
   if (existing.rows.length === 0) {
