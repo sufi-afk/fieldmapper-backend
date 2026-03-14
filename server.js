@@ -108,9 +108,11 @@ async function setupDatabase() {
 // Login — accepts email (organiser) OR username (worker)
 app.post('/api/auth/login', async (req, res) => {
   const { email, username, password } = req.body;
-  const identifier = username || email;
+  let identifier = username || email;
   if (!identifier || !password)
     return res.status(400).json({ error: 'Username/email and password required' });
+  // Strip leading @ in case worker types @username
+  if (identifier.startsWith('@')) identifier = identifier.slice(1);
   try {
     // Try matching username first, then email
     const result = await pool.query(
@@ -224,7 +226,7 @@ app.get('/api/surveys', auth, async (req, res) => {
       result = await pool.query(
         `SELECT s.* FROM surveys s
          JOIN survey_assignments sa ON sa.survey_id = s.id
-         WHERE sa.worker_id = $1 AND s.status = 'active'
+         WHERE sa.worker_id = $1
          ORDER BY s.created_at DESC`,
         [req.user.id]
       );
