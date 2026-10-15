@@ -10,13 +10,27 @@ const JWT_SECRET = process.env.JWT_SECRET || 'fieldmapper_secret_key_2026';
 
 // ─── DATABASE ─────────────────────────────────────────────────
 const pool = process.env.DATABASE_URL
-  ? new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } })
-  : new Pool({ host: 'localhost', port: 5432, database: 'fieldmapper_db', user: 'postgres', password: 'postgres' });
+  ? new Pool({
+      connectionString: process.env.DATABASE_URL,
+      ssl: (process.env.DATABASE_URL.includes('localhost') || process.env.DATABASE_URL.includes('127.0.0.1'))
+        ? false
+        : { rejectUnauthorized: false }
+    })
+  : new Pool({
+      host: process.env.DB_HOST || 'localhost',
+      port: process.env.DB_PORT || 5432,
+      database: process.env.DB_NAME || 'fieldmapper_db',
+      user: process.env.DB_USER || 'postgres',
+      password: process.env.DB_PASSWORD || 'postgres'
+    });
 
 // ─── MIDDLEWARE ───────────────────────────────────────────────
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ limit: '10mb', extended: true }));
+
+app.get('/', (req, res) => res.json({ status: 'ok', service: 'FieldMapper API' }));
+app.get('/health', (req, res) => res.json({ status: 'healthy', timestamp: new Date() }));
 
 const auth = (req, res, next) => {
   const token = req.headers.authorization?.split(' ')[1];
@@ -363,10 +377,11 @@ app.get('/api/stats', auth, organiserOnly, async (req, res) => {
 });
 
 // ─── START ────────────────────────────────────────────────────
-setupDatabase().then(() => {
-  app.listen(PORT, () => {
-    console.log(`\n🚀 FieldMapper API running on port ${PORT}`);
-  });
-}).catch(err => {
-  console.error('❌ Database error:', err.message);
+app.listen(PORT, async () => {
+  console.log(`\n🚀 FieldMapper API running on port ${PORT}`);
+  try {
+    await setupDatabase();
+  } catch (err) {
+    console.error('❌ Database error:', err.message);
+  }
 });
