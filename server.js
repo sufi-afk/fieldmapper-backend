@@ -399,72 +399,80 @@ async function initDatabaseConnection() {
     return;
   }
 
+  const rawUrl = process.env.DATABASE_URL;
+  const renderExternalRegex = /@(dpg-[a-z0-9-]+)\.[a-z0-9-]*postgres\.render\.com(?::\d+)?/i;
+
+  let candidates = [];
+
+  // 1. If it's a Render external Postgres URL, auto-generate the internal private URL first!
+  if (renderExternalRegex.test(rawUrl)) {
+    const internalUrl = rawUrl.replace(renderExternalRegex, '@$1:5432').replace(/[?&]sslmode=[^&]+/i, '');
+    candidates.push({
+      name: 'render_internal_no_ssl',
+      url: internalUrl,
+      ssl: false,
+    });
+    candidates.push({
+      name: 'render_internal_ssl',
+      url: internalUrl,
+      ssl: { rejectUnauthorized: false },
+    });
+  }
+
+  // 2. Parse host for external SSL connections
   let dbHost = null;
   try {
-    const u = new URL(process.env.DATABASE_URL.replace(/^(postgres|postgresql):/, 'http:'));
+    const u = new URL(rawUrl.replace(/^(postgres|postgresql):/, 'http:'));
     dbHost = u.hostname;
   } catch (e) {}
   dbDiagnostics.dbHost = dbHost;
 
-  let dbUrl = process.env.DATABASE_URL;
-  if (!dbUrl.includes('localhost') && !dbUrl.includes('127.0.0.1')) {
-    if (!dbUrl.includes('sslmode=') && !dbUrl.includes('ssl=')) {
-      dbUrl += (dbUrl.includes('?') ? '&' : '?') + 'sslmode=require';
+  let sslUrl = rawUrl;
+  if (!sslUrl.includes('localhost') && !sslUrl.includes('127.0.0.1')) {
+    if (!sslUrl.includes('sslmode=') && !sslUrl.includes('ssl=')) {
+      sslUrl += (sslUrl.includes('?') ? '&' : '?') + 'sslmode=require';
     }
   }
 
-  // Attempt 1 to 3: with sslmode=require + SNI servername + relaxed SSL
-  for (let attempt = 1; attempt <= 3; attempt++) {
+  candidates.push({
+    name: 'external_ssl_relaxed',
+    url: sslUrl,
+    ssl: { rejectUnauthorized: false, ...(dbHost ? { servername: dbHost } : {}) },
+  });
+
+  candidates.push({
+    name: 'external_raw',
+    url: rawUrl,
+    ssl: false,
+  });
+
+  for (let i = 0; i < candidates.length; i++) {
+    const c = candidates[i];
     try {
-      dbDiagnostics.currentMode = `ssl_attempt_${attempt}`;
-      console.log(`🔄 DB connection attempt ${attempt} with SSL (host: ${dbHost})...`);
+      dbDiagnostics.currentMode = c.name;
+      console.log(`🔄 Attempt ${i + 1}/${candidates.length} [${c.name}]...`);
       try { if (pool) await pool.end().catch(() => {}); } catch (e) {}
 
-      const sslConfig = {
-        rejectUnauthorized: false,
-        ...(dbHost ? { servername: dbHost } : {}),
-      };
-
       pool = new Pool({
-        connectionString: dbUrl,
-        ssl: sslConfig,
-        connectionTimeoutMillis: 30000,
+        connectionString: c.url,
+        ssl: c.ssl,
+        connectionTimeoutMillis: 15000,
       });
       pool.on('error', e => console.error('Unexpected DB client error:', e.message));
 
       await pool.query('SELECT 1');
-      console.log(`✅ PostgreSQL connected on attempt ${attempt}!`);
-      dbDiagnostics.connectedAttempt = attempt;
+      console.log(`✅ PostgreSQL connected successfully via [${c.name}]!`);
+      dbDiagnostics.connectedVia = c.name;
       dbDiagnostics.status = 'connected';
       await setupDatabase();
       return;
     } catch (err) {
-      dbDiagnostics[`attempt${attempt}`] = err.message;
-      console.warn(`⚠️ Attempt ${attempt} failed:`, err.message);
-      if (attempt < 3) {
-        await new Promise(r => setTimeout(r, 2000));
-      }
+      dbDiagnostics[c.name] = err.message;
+      console.warn(`⚠️ Attempt [${c.name}] failed:`, err.message);
     }
   }
 
-  // Fallback: without SSL object (letting connectionString dictate)
-  try {
-    dbDiagnostics.currentMode = 'fallback_clean';
-    console.log('🔄 Fallback: connecting with raw connection string...');
-    try { if (pool) await pool.end().catch(() => {}); } catch (e) {}
-    pool = new Pool({
-      connectionString: process.env.DATABASE_URL,
-      connectionTimeoutMillis: 30000,
-    });
-    pool.on('error', e => console.error('Unexpected DB client error:', e.message));
-    await pool.query('SELECT 1');
-    console.log('✅ PostgreSQL connected with raw connection string');
-    await setupDatabase();
-    return;
-  } catch (err) {
-    dbDiagnostics.attemptFallback = err.message;
-    console.error('❌ All connection attempts failed:', err.message);
-  }
+  console.error('❌ All database connection candidates failed.');
 }
 
 app.listen(PORT, async () => {
