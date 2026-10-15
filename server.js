@@ -9,20 +9,24 @@ const PORT = process.env.PORT || 4000;
 const JWT_SECRET = process.env.JWT_SECRET || 'fieldmapper_secret_key_2026';
 
 // ─── DATABASE ─────────────────────────────────────────────────
-const pool = process.env.DATABASE_URL
+let pool = process.env.DATABASE_URL
   ? new Pool({
       connectionString: process.env.DATABASE_URL,
       ssl: (process.env.DATABASE_URL.includes('localhost') || process.env.DATABASE_URL.includes('127.0.0.1'))
         ? false
-        : { rejectUnauthorized: false }
+        : { rejectUnauthorized: false },
+      connectionTimeoutMillis: 10000,
     })
   : new Pool({
       host: process.env.DB_HOST || 'localhost',
       port: process.env.DB_PORT || 5432,
       database: process.env.DB_NAME || 'fieldmapper_db',
       user: process.env.DB_USER || 'postgres',
-      password: process.env.DB_PASSWORD || 'postgres'
+      password: process.env.DB_PASSWORD || 'postgres',
+      connectionTimeoutMillis: 10000,
     });
+
+pool.on('error', err => console.error('Unexpected error on idle DB client:', err.message));
 
 // ─── MIDDLEWARE ───────────────────────────────────────────────
 app.use(cors());
@@ -30,7 +34,14 @@ app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ limit: '10mb', extended: true }));
 
 app.get('/', (req, res) => res.json({ status: 'ok', service: 'FieldMapper API' }));
-app.get('/health', (req, res) => res.json({ status: 'healthy', timestamp: new Date() }));
+app.get('/health', async (req, res) => {
+  try {
+    const dbRes = await pool.query('SELECT NOW()');
+    res.json({ status: 'healthy', database: 'connected', time: dbRes.rows[0].now });
+  } catch (err) {
+    res.status(500).json({ status: 'unhealthy', database: 'disconnected', error: err.message });
+  }
+});
 
 const auth = (req, res, next) => {
   const token = req.headers.authorization?.split(' ')[1];
@@ -377,11 +388,37 @@ app.get('/api/stats', auth, organiserOnly, async (req, res) => {
 });
 
 // ─── START ────────────────────────────────────────────────────
+async function initDatabaseConnection() {
+  if (!process.env.DATABASE_URL) {
+    await setupDatabase();
+    return;
+  }
+  try {
+    console.log('🔄 Testing PostgreSQL connection (attempt 1: with SSL)...');
+    await pool.query('SELECT 1');
+    console.log('✅ PostgreSQL connected with SSL');
+    await setupDatabase();
+  } catch (err) {
+    console.warn('⚠️ SSL connection failed:', err.message);
+    console.log('🔄 Retrying PostgreSQL connection (attempt 2: without SSL)...');
+    try { await pool.end().catch(() => {}); } catch (e) {}
+    pool = new Pool({
+      connectionString: process.env.DATABASE_URL,
+      ssl: false,
+      connectionTimeoutMillis: 10000,
+    });
+    pool.on('error', e => console.error('Unexpected error on idle DB client:', e.message));
+    await pool.query('SELECT 1');
+    console.log('✅ PostgreSQL connected without SSL');
+    await setupDatabase();
+  }
+}
+
 app.listen(PORT, async () => {
   console.log(`\n🚀 FieldMapper API running on port ${PORT}`);
   try {
-    await setupDatabase();
+    await initDatabaseConnection();
   } catch (err) {
-    console.error('❌ Database error:', err.message);
+    console.error('❌ Database initialization error:', err.message);
   }
 });
