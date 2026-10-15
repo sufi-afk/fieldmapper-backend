@@ -427,23 +427,24 @@ async function initDatabaseConnection() {
   } catch (e) {}
   dbDiagnostics.dbHost = dbHost;
 
-  let sslUrl = rawUrl;
-  if (!sslUrl.includes('localhost') && !sslUrl.includes('127.0.0.1')) {
-    if (!sslUrl.includes('sslmode=') && !sslUrl.includes('ssl=')) {
-      sslUrl += (sslUrl.includes('?') ? '&' : '?') + 'sslmode=require';
-    }
-  }
+  const cleanUrl = rawUrl.replace(/[?&]sslmode=[^&]+/gi, '').replace(/[?&]ssl=[^&]+/gi, '');
 
   candidates.push({
-    name: 'external_ssl_relaxed',
-    url: sslUrl,
+    name: 'ssl_clean_relaxed',
+    url: cleanUrl,
+    ssl: { rejectUnauthorized: false },
+  });
+
+  candidates.push({
+    name: 'ssl_with_sni',
+    url: rawUrl,
     ssl: { rejectUnauthorized: false, ...(dbHost ? { servername: dbHost } : {}) },
   });
 
   candidates.push({
-    name: 'external_raw',
+    name: 'ssl_standard',
     url: rawUrl,
-    ssl: false,
+    ssl: true,
   });
 
   for (let i = 0; i < candidates.length; i++) {
