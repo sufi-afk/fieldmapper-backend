@@ -33,13 +33,15 @@ app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ limit: '10mb', extended: true }));
 
+let dbDiagnostics = { attempt1: null, attempt2: null, currentMode: null };
+
 app.get('/', (req, res) => res.json({ status: 'ok', service: 'FieldMapper API' }));
 app.get('/health', async (req, res) => {
   try {
     const dbRes = await pool.query('SELECT NOW()');
-    res.json({ status: 'healthy', database: 'connected', time: dbRes.rows[0].now });
+    res.json({ status: 'healthy', database: 'connected', time: dbRes.rows[0].now, mode: dbDiagnostics.currentMode });
   } catch (err) {
-    res.status(500).json({ status: 'unhealthy', database: 'disconnected', error: err.message });
+    res.status(500).json({ status: 'unhealthy', database: 'disconnected', error: err.message, diagnostics: dbDiagnostics });
   }
 });
 
@@ -390,27 +392,68 @@ app.get('/api/stats', auth, organiserOnly, async (req, res) => {
 // ─── START ────────────────────────────────────────────────────
 async function initDatabaseConnection() {
   if (!process.env.DATABASE_URL) {
+    dbDiagnostics.currentMode = 'local_default';
     await setupDatabase();
     return;
   }
+
+  // Attempt 1: with relaxed SSL
   try {
-    console.log('🔄 Testing PostgreSQL connection (attempt 1: with SSL)...');
+    dbDiagnostics.currentMode = 'ssl_relaxed';
+    console.log('🔄 Attempt 1: with relaxed SSL...');
+    pool = new Pool({
+      connectionString: process.env.DATABASE_URL,
+      ssl: { rejectUnauthorized: false },
+      connectionTimeoutMillis: 10000,
+    });
+    pool.on('error', e => console.error('Unexpected DB client error:', e.message));
     await pool.query('SELECT 1');
-    console.log('✅ PostgreSQL connected with SSL');
+    console.log('✅ PostgreSQL connected (attempt 1: relaxed SSL)');
     await setupDatabase();
+    return;
   } catch (err) {
-    console.warn('⚠️ SSL connection failed:', err.message);
-    console.log('🔄 Retrying PostgreSQL connection (attempt 2: without SSL)...');
+    dbDiagnostics.attempt1 = err.message;
+    console.warn('⚠️ Attempt 1 failed:', err.message);
+  }
+
+  // Attempt 2: native connectionString
+  try {
+    dbDiagnostics.currentMode = 'ssl_native';
+    console.log('🔄 Attempt 2: native connection string...');
+    try { await pool.end().catch(() => {}); } catch (e) {}
+    pool = new Pool({
+      connectionString: process.env.DATABASE_URL,
+      connectionTimeoutMillis: 10000,
+    });
+    pool.on('error', e => console.error('Unexpected DB client error:', e.message));
+    await pool.query('SELECT 1');
+    console.log('✅ PostgreSQL connected (attempt 2: native string)');
+    await setupDatabase();
+    return;
+  } catch (err) {
+    dbDiagnostics.attempt2 = err.message;
+    console.warn('⚠️ Attempt 2 failed:', err.message);
+  }
+
+  // Attempt 3: without SSL
+  try {
+    dbDiagnostics.currentMode = 'no_ssl';
+    console.log('🔄 Attempt 3: without SSL...');
     try { await pool.end().catch(() => {}); } catch (e) {}
     pool = new Pool({
       connectionString: process.env.DATABASE_URL,
       ssl: false,
       connectionTimeoutMillis: 10000,
     });
-    pool.on('error', e => console.error('Unexpected error on idle DB client:', e.message));
+    pool.on('error', e => console.error('Unexpected DB client error:', e.message));
     await pool.query('SELECT 1');
-    console.log('✅ PostgreSQL connected without SSL');
+    console.log('✅ PostgreSQL connected (attempt 3: no SSL)');
     await setupDatabase();
+    return;
+  } catch (err) {
+    dbDiagnostics.attempt3 = err.message;
+    console.error('❌ All connection attempts failed:', err.message);
+    throw err;
   }
 }
 
