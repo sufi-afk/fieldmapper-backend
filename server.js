@@ -399,6 +399,13 @@ async function initDatabaseConnection() {
     return;
   }
 
+  let dbHost = null;
+  try {
+    const u = new URL(process.env.DATABASE_URL.replace(/^(postgres|postgresql):/, 'http:'));
+    dbHost = u.hostname;
+  } catch (e) {}
+  dbDiagnostics.dbHost = dbHost;
+
   let dbUrl = process.env.DATABASE_URL;
   if (!dbUrl.includes('localhost') && !dbUrl.includes('127.0.0.1')) {
     if (!dbUrl.includes('sslmode=') && !dbUrl.includes('ssl=')) {
@@ -406,16 +413,21 @@ async function initDatabaseConnection() {
     }
   }
 
-  // Attempt 1 to 3: with sslmode=require + relaxed SSL
+  // Attempt 1 to 3: with sslmode=require + SNI servername + relaxed SSL
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
       dbDiagnostics.currentMode = `ssl_attempt_${attempt}`;
-      console.log(`🔄 DB connection attempt ${attempt} with SSL...`);
+      console.log(`🔄 DB connection attempt ${attempt} with SSL (host: ${dbHost})...`);
       try { if (pool) await pool.end().catch(() => {}); } catch (e) {}
+
+      const sslConfig = {
+        rejectUnauthorized: false,
+        ...(dbHost ? { servername: dbHost } : {}),
+      };
 
       pool = new Pool({
         connectionString: dbUrl,
-        ssl: { rejectUnauthorized: false },
+        ssl: sslConfig,
         connectionTimeoutMillis: 30000,
       });
       pool.on('error', e => console.error('Unexpected DB client error:', e.message));
