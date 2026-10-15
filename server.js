@@ -4,6 +4,8 @@ const bcrypt     = require('bcryptjs');
 const jwt        = require('jsonwebtoken');
 const { Pool }   = require('pg');
 
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+
 const app  = express();
 const PORT = process.env.PORT || 4000;
 const JWT_SECRET = process.env.JWT_SECRET || 'fieldmapper_secret_key_2026';
@@ -397,63 +399,59 @@ async function initDatabaseConnection() {
     return;
   }
 
-  // Attempt 1: with relaxed SSL
-  try {
-    dbDiagnostics.currentMode = 'ssl_relaxed';
-    console.log('🔄 Attempt 1: with relaxed SSL...');
-    pool = new Pool({
-      connectionString: process.env.DATABASE_URL,
-      ssl: { rejectUnauthorized: false },
-      connectionTimeoutMillis: 10000,
-    });
-    pool.on('error', e => console.error('Unexpected DB client error:', e.message));
-    await pool.query('SELECT 1');
-    console.log('✅ PostgreSQL connected (attempt 1: relaxed SSL)');
-    await setupDatabase();
-    return;
-  } catch (err) {
-    dbDiagnostics.attempt1 = err.message;
-    console.warn('⚠️ Attempt 1 failed:', err.message);
+  let dbUrl = process.env.DATABASE_URL;
+  if (!dbUrl.includes('localhost') && !dbUrl.includes('127.0.0.1')) {
+    if (!dbUrl.includes('sslmode=') && !dbUrl.includes('ssl=')) {
+      dbUrl += (dbUrl.includes('?') ? '&' : '?') + 'sslmode=require';
+    }
   }
 
-  // Attempt 2: native connectionString
-  try {
-    dbDiagnostics.currentMode = 'ssl_native';
-    console.log('🔄 Attempt 2: native connection string...');
-    try { await pool.end().catch(() => {}); } catch (e) {}
-    pool = new Pool({
-      connectionString: process.env.DATABASE_URL,
-      connectionTimeoutMillis: 10000,
-    });
-    pool.on('error', e => console.error('Unexpected DB client error:', e.message));
-    await pool.query('SELECT 1');
-    console.log('✅ PostgreSQL connected (attempt 2: native string)');
-    await setupDatabase();
-    return;
-  } catch (err) {
-    dbDiagnostics.attempt2 = err.message;
-    console.warn('⚠️ Attempt 2 failed:', err.message);
+  // Attempt 1 to 3: with sslmode=require + relaxed SSL
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      dbDiagnostics.currentMode = `ssl_attempt_${attempt}`;
+      console.log(`🔄 DB connection attempt ${attempt} with SSL...`);
+      try { if (pool) await pool.end().catch(() => {}); } catch (e) {}
+
+      pool = new Pool({
+        connectionString: dbUrl,
+        ssl: { rejectUnauthorized: false },
+        connectionTimeoutMillis: 30000,
+      });
+      pool.on('error', e => console.error('Unexpected DB client error:', e.message));
+
+      await pool.query('SELECT 1');
+      console.log(`✅ PostgreSQL connected on attempt ${attempt}!`);
+      dbDiagnostics.connectedAttempt = attempt;
+      dbDiagnostics.status = 'connected';
+      await setupDatabase();
+      return;
+    } catch (err) {
+      dbDiagnostics[`attempt${attempt}`] = err.message;
+      console.warn(`⚠️ Attempt ${attempt} failed:`, err.message);
+      if (attempt < 3) {
+        await new Promise(r => setTimeout(r, 2000));
+      }
+    }
   }
 
-  // Attempt 3: without SSL
+  // Fallback: without SSL object (letting connectionString dictate)
   try {
-    dbDiagnostics.currentMode = 'no_ssl';
-    console.log('🔄 Attempt 3: without SSL...');
-    try { await pool.end().catch(() => {}); } catch (e) {}
+    dbDiagnostics.currentMode = 'fallback_clean';
+    console.log('🔄 Fallback: connecting with raw connection string...');
+    try { if (pool) await pool.end().catch(() => {}); } catch (e) {}
     pool = new Pool({
       connectionString: process.env.DATABASE_URL,
-      ssl: false,
-      connectionTimeoutMillis: 10000,
+      connectionTimeoutMillis: 30000,
     });
     pool.on('error', e => console.error('Unexpected DB client error:', e.message));
     await pool.query('SELECT 1');
-    console.log('✅ PostgreSQL connected (attempt 3: no SSL)');
+    console.log('✅ PostgreSQL connected with raw connection string');
     await setupDatabase();
     return;
   } catch (err) {
-    dbDiagnostics.attempt3 = err.message;
+    dbDiagnostics.attemptFallback = err.message;
     console.error('❌ All connection attempts failed:', err.message);
-    throw err;
   }
 }
 
